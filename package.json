@@ -1,0 +1,17 @@
+{
+  "name": "relay-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Generic WebSocket relay with channel-based pub/sub. Reusable across projects.",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
