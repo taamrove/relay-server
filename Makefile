@@ -8,6 +8,12 @@ CONTAINER  ?= relay-server
 IMAGE      ?= relay-server:latest
 TOKEN_FILE ?= .deployed-token
 
+# Per-role auth flags forwarded to the container. Override on the CLI:
+#   make deploy PUBLIC_PUBLISHERS=true   ← let any client publish without token
+#   make deploy PUBLIC_SUBSCRIBERS=false ← lock down viewer access too
+PUBLIC_SUBSCRIBERS ?= true
+PUBLIC_PUBLISHERS  ?= false
+
 # `printf '%s'` (not `echo`) so the file never gets a trailing newline — which
 # would silently break `pbcopy < .deployed-token` paste flows downstream.
 define WRITE_TOKEN
@@ -28,8 +34,8 @@ help:
 deploy: sync
 	@test -s $(TOKEN_FILE) || (echo "ERROR: $(TOKEN_FILE) is empty. Run 'make rotate-token' first." && exit 1)
 	@TOKEN=$$(cat $(TOKEN_FILE)) && \
-	  ssh $(HOST) "cd $(REMOTE_DIR) && docker build -t $(IMAGE) . && docker rm -f $(CONTAINER) 2>/dev/null; docker run -d --name $(CONTAINER) --restart unless-stopped -p $(HOST_PORT):8080 -e RELAY_TOKEN='$$TOKEN' $(IMAGE)" && \
-	  echo "✔ deployed $(CONTAINER) on $(HOST):$(HOST_PORT)"
+	  ssh $(HOST) "cd $(REMOTE_DIR) && docker build -t $(IMAGE) . && docker rm -f $(CONTAINER) 2>/dev/null; docker run -d --name $(CONTAINER) --restart unless-stopped -p $(HOST_PORT):8080 -e RELAY_TOKEN='$$TOKEN' -e PUBLIC_SUBSCRIBERS='$(PUBLIC_SUBSCRIBERS)' -e PUBLIC_PUBLISHERS='$(PUBLIC_PUBLISHERS)' $(IMAGE)" && \
+	  echo "✔ deployed $(CONTAINER) on $(HOST):$(HOST_PORT) (PUBLIC_SUBS=$(PUBLIC_SUBSCRIBERS) PUBLIC_PUBS=$(PUBLIC_PUBLISHERS))"
 
 # Generate a fresh token, persist it locally (no trailing newline), then deploy.
 rotate-token:

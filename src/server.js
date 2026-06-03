@@ -4,16 +4,19 @@ import { URL } from 'node:url';
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = process.env.RELAY_TOKEN ?? '';
-// Subscribers (read-only) get in without a token by default so the viewer can
-// be shared with a stage crew via a short channel-only URL. Publishers (the
-// bridge writing data) always need the token. Set PUBLIC_SUBSCRIBERS=false to
-// require token auth on both sides.
-const PUBLIC_SUBSCRIBERS = (process.env.PUBLIC_SUBSCRIBERS ?? 'true') !== 'false';
+// Auth toggles per role. Both default-on for "subscribers" because the viewer
+// URL needs to be share-friendly; default-off for "publishers" because writes
+// should normally be authenticated. Flip PUBLIC_PUBLISHERS=true to run the
+// relay fully open (e.g. when handing the bridge to someone you don't want to
+// share the token with). Channel name is the only privacy left in that mode.
+const PUBLIC_SUBSCRIBERS = (process.env.PUBLIC_SUBSCRIBERS ?? 'true')  !== 'false';
+const PUBLIC_PUBLISHERS  = (process.env.PUBLIC_PUBLISHERS  ?? 'false') !== 'false';
 
 if (!TOKEN) {
   console.warn('[relay] RELAY_TOKEN is empty — connections will not be authenticated.');
 }
-console.log(`[relay] public subscribers: ${PUBLIC_SUBSCRIBERS ? 'YES (no token needed to read)' : 'no (token required)'}`);
+console.log(`[relay] public subscribers: ${PUBLIC_SUBSCRIBERS ? 'YES' : 'no'}`);
+console.log(`[relay] public publishers:  ${PUBLIC_PUBLISHERS  ? 'YES' : 'no'}`);
 
 // channel -> { subscribers:Set<ws>, publishers:Set<ws>, lastMessage:string|null }
 const channels = new Map();
@@ -66,9 +69,9 @@ server.on('upgrade', (req, socket, head) => {
     socket.destroy();
     return;
   }
-  // Publishers always need the token; subscribers only if PUBLIC_SUBSCRIBERS
-  // is explicitly turned off. Security trade-off documented at the top.
-  const requiresAuth = !!TOKEN && (role === 'publisher' || !PUBLIC_SUBSCRIBERS);
+  // Auth check depends on role + the PUBLIC_* env vars (see top of file).
+  const isPublic = role === 'publisher' ? PUBLIC_PUBLISHERS : PUBLIC_SUBSCRIBERS;
+  const requiresAuth = !!TOKEN && !isPublic;
   if (requiresAuth && token !== TOKEN) {
     socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
     socket.destroy();

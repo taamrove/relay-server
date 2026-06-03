@@ -11,14 +11,23 @@ Connect to `ws://host:8080/?token=…&channel=…&role=publisher|subscriber`.
 
 ## Auth
 
-The token gate is asymmetric so producers can share read-only viewer URLs without leaking the publishing secret:
+The token gate is configurable per role so you can mix and match:
 
 | Env var | Default | Meaning |
 |---|---|---|
 | `RELAY_TOKEN` | _(empty)_ | Shared secret. Empty = no auth at all (dev only). |
-| `PUBLIC_SUBSCRIBERS` | `true` | When true, subscribers connect without a token — the channel name is the only "secret". Set `false` to require the token on both sides. |
+| `PUBLIC_SUBSCRIBERS` | `true` | When true, subscribers connect without a token. Set `false` to require the token from readers too. |
+| `PUBLIC_PUBLISHERS` | `false` | When true, **anyone** can publish to **any** channel without a token. Channel name becomes the only protection against someone trampling your stream. Set this for hand-it-out installs where sharing the token is too much friction. |
 
-For a public-subscriber setup, pick non-guessable channel names (`qlab-show-2026-tonight-x7k9m2`, not `show1`). The relay does no rate-limiting; if you expose it on the open internet, put it behind a proxy that does.
+Pick non-guessable channel names (`qlab-mainstage-2026-tonight-x7k9m2`, not `show1`) when any role is public — that's all that keeps random clients from listening to or writing into your channel. The relay does no rate-limiting; behind a public domain, put it behind a proxy that does.
+
+Toggle either via the Makefile when deploying:
+
+```sh
+make deploy PUBLIC_PUBLISHERS=true       # fully public (no token needed by bridge or viewer)
+make deploy PUBLIC_SUBSCRIBERS=false     # lock down viewer access
+make deploy                              # default: public readers, authenticated writers
+```
 
 Messages are passed through untouched. Pick your own payload format per channel (JSON recommended).
 
