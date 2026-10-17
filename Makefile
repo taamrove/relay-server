@@ -20,6 +20,13 @@ DATA_HOST_DIR ?= /mnt/user/appdata/relay-server-data
 PUBLIC_SUBSCRIBERS ?= true
 PUBLIC_PUBLISHERS  ?= false
 
+# Per-machine production settings, kept out of git. Put e.g.
+#   PUBLIC_PUBLISHERS = true
+# in .deploy.mk next to this Makefile so a plain `make deploy` reproduces how
+# the live relay actually runs. (A deploy with the defaults once locked out a
+# bridge that publishes without the token.)
+-include .deploy.mk
+
 # `printf '%s'` (not `echo`) so the file never gets a trailing newline — which
 # would silently break `pbcopy < .deployed-token` paste flows downstream.
 define WRITE_TOKEN
@@ -66,7 +73,7 @@ rotate-editor-token:
 # Just push the code; doesn't restart the container.
 sync:
 	@rsync -az --delete \
-	  --exclude node_modules --exclude .git --exclude .env --exclude $(TOKEN_FILE) --exclude $(EDITOR_TOKEN_FILE) --exclude data \
+	  --exclude node_modules --exclude .git --exclude .env --exclude $(TOKEN_FILE) --exclude $(EDITOR_TOKEN_FILE) --exclude .deploy.mk --exclude data \
 	  ./ $(HOST):$(REMOTE_DIR)/
 
 build:
