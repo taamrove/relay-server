@@ -7,6 +7,12 @@ HOST_PORT  ?= 8765
 CONTAINER  ?= relay-server
 IMAGE      ?= relay-server:latest
 TOKEN_FILE ?= .deployed-token
+# Optional separate password for editing shared custom cues. Empty/missing file
+# = the relay falls back to RELAY_TOKEN for editing.
+EDITOR_TOKEN_FILE ?= .deployed-editor-token
+# Item store lives OUTSIDE $(REMOTE_DIR) on purpose: `sync` runs rsync --delete
+# into REMOTE_DIR, which would wipe saved cues on every deploy.
+DATA_HOST_DIR ?= /mnt/user/appdata/relay-server-data
 
 # Per-role auth flags forwarded to the container. Override on the CLI:
 #   make deploy PUBLIC_PUBLISHERS=true   ← let any client publish without token
@@ -20,12 +26,13 @@ define WRITE_TOKEN
 printf '%s' "$$TOKEN" > $(TOKEN_FILE)
 endef
 
-.PHONY: help deploy rotate-token sync build run logs health stop
+.PHONY: help deploy rotate-token rotate-editor-token sync build run logs health stop
 
 help:
 	@echo "Targets:"
 	@echo "  deploy        sync code, rebuild image, restart container with current token"
 	@echo "  rotate-token  generate a new token, save it locally, deploy with it"
+	@echo "  rotate-editor-token  generate a separate password for editing shared cues, deploy"
 	@echo "  logs          tail container logs (Ctrl-C to stop)"
 	@echo "  health        curl GET /health and print response"
 	@echo "  stop          stop & remove the container (does NOT touch the image)"
@@ -33,8 +40,8 @@ help:
 # Sync source, build, restart with whatever token is in $(TOKEN_FILE).
 deploy: sync
 	@test -s $(TOKEN_FILE) || (echo "ERROR: $(TOKEN_FILE) is empty. Run 'make rotate-token' first." && exit 1)
-	@TOKEN=$$(cat $(TOKEN_FILE)) && \
-	  ssh $(HOST) "cd $(REMOTE_DIR) && docker build -t $(IMAGE) . && docker rm -f $(CONTAINER) 2>/dev/null; docker run -d --name $(CONTAINER) --restart unless-stopped -p $(HOST_PORT):8080 -e RELAY_TOKEN='$$TOKEN' -e PUBLIC_SUBSCRIBERS='$(PUBLIC_SUBSCRIBERS)' -e PUBLIC_PUBLISHERS='$(PUBLIC_PUBLISHERS)' $(IMAGE)" && \
+	@TOKEN=$$(cat $(TOKEN_FILE)) && EDITOR=$$(cat $(EDITOR_TOKEN_FILE) 2>/dev/null || true) && \
+	  ssh $(HOST) "mkdir -p $(DATA_HOST_DIR) && cd $(REMOTE_DIR) && docker build -t $(IMAGE) . && docker rm -f $(CONTAINER) 2>/dev/null; docker run -d --name $(CONTAINER) --restart unless-stopped -p $(HOST_PORT):8080 -v $(DATA_HOST_DIR):/data -e DATA_DIR=/data -e RELAY_TOKEN='$$TOKEN' -e EDITOR_TOKEN='$$EDITOR' -e PUBLIC_SUBSCRIBERS='$(PUBLIC_SUBSCRIBERS)' -e PUBLIC_PUBLISHERS='$(PUBLIC_PUBLISHERS)' $(IMAGE)" && \
 	  echo "✔ deployed $(CONTAINER) on $(HOST):$(HOST_PORT) (PUBLIC_SUBS=$(PUBLIC_SUBSCRIBERS) PUBLIC_PUBS=$(PUBLIC_PUBLISHERS))"
 
 # Generate a fresh token, persist it locally (no trailing newline), then deploy.
@@ -48,10 +55,18 @@ rotate-token:
 	@echo "  • QLab Cue Viewer menu bar app → Preferences → Relay → Token"
 	@echo "  • any web viewer URLs that hardcode it"
 
+# Separate password for editing shared custom cues, so you can hand it to e.g.
+# the stage manager without giving away the publisher token.
+rotate-editor-token:
+	@TOKEN=$$(openssl rand -hex 12) && \
+	  printf '%s' "$$TOKEN" > $(EDITOR_TOKEN_FILE) && \
+	  echo "✔ new editor token saved to $(EDITOR_TOKEN_FILE)"
+	@$(MAKE) deploy
+
 # Just push the code; doesn't restart the container.
 sync:
 	@rsync -az --delete \
-	  --exclude node_modules --exclude .git --exclude .env --exclude $(TOKEN_FILE) \
+	  --exclude node_modules --exclude .git --exclude .env --exclude $(TOKEN_FILE) --exclude $(EDITOR_TOKEN_FILE) --exclude data \
 	  ./ $(HOST):$(REMOTE_DIR)/
 
 build:

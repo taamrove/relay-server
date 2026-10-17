@@ -33,6 +33,44 @@ Messages are passed through untouched. Pick your own payload format per channel 
 
 `GET /health` returns channel stats as JSON.
 
+## Items (shared & private, persisted)
+
+Besides the pass-through stream, each channel has a small persisted **item store**. The QLab viewer uses it for custom cues, but items are opaque JSON so other projects can reuse it.
+
+Each item is either:
+
+- **shared**: every subscriber of the channel sees it. Creating, editing or deleting one requires the **editor token** (`EDITOR_TOKEN`, which falls back to `RELAY_TOKEN` when unset).
+- **private**: only its owner sees it. The owner is identified by a random key the client generates. The relay stores only a SHA-256 of that key and never sends it back; clients get a `mine: true` flag instead. Anyone who can subscribe may create private items, since they only affect themselves.
+
+Subscribers speak the protocol over the same socket, using JSON messages tagged `relay: "items"`:
+
+| Direction | Message |
+|---|---|
+| → relay | `{ relay:"items", op:"hello", owner?, edit? }` |
+| → relay | `{ relay:"items", op:"upsert", req?, item:{ id?, visibility:"shared"\|"private", data:{…} } }` |
+| → relay | `{ relay:"items", op:"delete", req?, id }` |
+| ← relay | `{ op:"sync", items, canEditShared, hasOwner }` (reply to hello) |
+| ← relay | `{ op:"put", item }` / `{ op:"remove", id }` (live changes you're allowed to see) |
+| ← relay | `{ op:"ack", req, ok, id?, error? }` |
+
+Design notes:
+
+- **Secrets go in `hello`, not the URL**, so the owner key and editor token don't end up in Nginx Proxy Manager's access logs.
+- **Publishers can't send `relay:"items"` messages.** The relay drops them, so a publisher can't forge items into viewers.
+- **Both the old and new visibility are permission-checked.** An editor can't take over someone's private item by id, and a viewer can't flip a shared item to private.
+- **Limits:** 4 KB per item, 2000 items per channel, 300 private items per owner, and a token-bucket rate limit of 30 burst / 5 writes per second per socket.
+- **Persistence:** one JSON file per channel in `DATA_DIR`, named by a hash of the channel. Writes are debounced and atomic (tmp + rename), and pending writes are flushed on SIGTERM.
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `EDITOR_TOKEN` | `RELAY_TOKEN` | Password for editing shared items. Both empty = dev mode, everyone can edit. |
+| `DATA_DIR` | `./data` (`/data` in Docker) | Where item files are written. |
+| `ITEMS_ENABLED` | `true` | Set `false` to turn the store off entirely. |
+
+The Makefile mounts `DATA_HOST_DIR` (default `/mnt/user/appdata/relay-server-data`) at `/data`. It deliberately lives outside `REMOTE_DIR`, because `make sync` runs `rsync --delete` there. Use `make rotate-editor-token` for a separate editing password you can hand to, for example, a stage manager without giving away the publisher token.
+
+Run the tests with `npm test`. They spawn the server and use real WebSocket clients.
+
 ## Run locally
 
 ```sh

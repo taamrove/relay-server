@@ -8,3 +8,7 @@ services:
     environment:
       - PORT=8080
       - RELAY_TOKEN=${RELAY_TOKEN}
+      - EDITOR_TOKEN=${EDITOR_TOKEN:-}
+      - DATA_DIR=/data
+    volumes:
+      - ./data:/data
