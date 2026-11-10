@@ -3,6 +3,7 @@ import http from 'node:http';
 import { URL } from 'node:url';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import { ItemStore, hashOwnerKey, canSee, viewOf } from './items.js';
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -24,7 +25,12 @@ const EDITOR_TOKEN = process.env.EDITOR_TOKEN || TOKEN;
 // to the channel's publishers (e.g. producer page -> stage timer).
 const UPSTREAM_ENABLED = (process.env.UPSTREAM_ENABLED ?? 'true') !== 'false';
 const UPSTREAM_MAX = 2048;
-const PRODUCER_HTML = fs.readFileSync(new URL('../public/producer.html', import.meta.url));
+// Stagetimer display pages (synced from the stagetimer repo). Read per request so a
+// missing/late-installed dir never breaks startup.
+const STATIC_DIR = path.resolve(process.env.STATIC_DIR ?? new URL('../public/stagetimer', import.meta.url).pathname);
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.woff2': 'font/woff2', '.ico': 'image/x-icon' };
+const CODE_RE = /^\/[2-9a-hjkmnp-z]{8}$/;
 const DATA_DIR = process.env.DATA_DIR ?? './data';
 const store = ITEMS_ENABLED ? new ItemStore({ dataDir: DATA_DIR }) : null;
 
@@ -60,30 +66,53 @@ function cleanupChannel(name) {
   }
 }
 
-const server = http.createServer((req, res) => {
-  if (req.url === '/health') {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    const stats = {};
-    for (const [name, ch] of channels) {
-      stats[name] = {
-        subscribers: ch.subscribers.size,
-        publishers: ch.publishers.size,
-        hasState: ch.lastMessage !== null,
-        items: store ? store.get(name).items.size : 0,
-      };
+function serveFile(res, file) {
+  fs.readFile(file, (err, buf) => {
+    if (err) {
+      const missing = file === path.join(STATIC_DIR, 'output.html');
+      res.writeHead(missing ? 503 : 404, missing ? { 'content-type': 'text/plain' } : {});
+      res.end(missing ? 'display pages not installed' : '');
+      return;
     }
-    res.end(JSON.stringify({ ok: true, channels: stats }));
+    const ext = path.extname(file).toLowerCase();
+    const html = ext === '.html';
+    res.writeHead(200, {
+      'content-type': MIME[ext] ?? 'application/octet-stream',
+      'cache-control': html ? 'no-store' : 'public, max-age=60',
+      ...(html && { 'referrer-policy': 'no-referrer' }),
+    });
+    res.end(buf);
+  });
+}
+
+const server = http.createServer((req, res) => {
+  const pathname = req.url.split(/[?#]/)[0];
+  if (pathname === '/health') {
+    // Aggregates only: channel names double as share codes, never list them.
+    let subscribers = 0, publishers = 0;
+    for (const ch of channels.values()) { subscribers += ch.subscribers.size; publishers += ch.publishers.size; }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, channels: channels.size, subscribers, publishers }));
     return;
   }
-  // Token is in the path: never cache, never leak via Referer. Same page for any token.
-  if (req.method === 'GET' && /^\/p\/[^/?#]+\/?(\?.*)?$/.test(req.url)) {
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
-    res.end(PRODUCER_HTML);
-    return;
+  if (req.method !== 'GET') { res.writeHead(404); res.end(); return; }
+  // Share-code viewer URL: same page for any code (the page reads the code from location.pathname).
+  if (CODE_RE.test(pathname)) return serveFile(res, path.join(STATIC_DIR, 'output.html'));
+  if (pathname.startsWith('/stagetimer/')) {
+    let rel;
+    try { rel = decodeURIComponent(pathname.slice('/stagetimer/'.length)); } catch { rel = ''; }
+    const file = path.resolve(STATIC_DIR, rel);
+    // Resolve + prefix check; directories and "" fall through to 404 via readFile error.
+    if (rel && !rel.includes('\0') && file.startsWith(STATIC_DIR + path.sep)) return serveFile(res, file);
   }
   res.writeHead(404);
   res.end();
 });
+
+function sendStats(ch) {
+  const msg = JSON.stringify({ relay: 'stats', subscribers: ch.subscribers.size });
+  for (const pub of ch.publishers) if (pub.readyState === pub.OPEN) pub.send(msg);
+}
 
 const wss = new WebSocketServer({ noServer: true });
 
@@ -127,10 +156,12 @@ wss.on('connection', (ws) => {
   if (ws.role === 'subscriber') {
     ch.subscribers.add(ws);
     if (ch.lastMessage !== null) ws.send(ch.lastMessage);
+    sendStats(ch);
     console.log(`[relay] +subscriber channel=${ws.channel} (now ${ch.subscribers.size})`);
   } else {
     ch.publishers.add(ws);
     console.log(`[relay] +publisher channel=${ws.channel} (now ${ch.publishers.size})`);
+    sendStats(ch);
   }
 
   ws.on('message', (data, isBinary) => {
@@ -158,6 +189,7 @@ wss.on('connection', (ws) => {
     if (ws.role === 'subscriber') ch.subscribers.delete(ws);
     else ch.publishers.delete(ws);
     console.log(`[relay] -${ws.role} channel=${ws.channel}`);
+    if (ws.role === 'subscriber') sendStats(ch);
     cleanupChannel(ws.channel);
   });
 

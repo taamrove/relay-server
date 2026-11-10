@@ -31,7 +31,7 @@ make deploy                              # default: public readers, authenticate
 
 Messages are passed through untouched. Pick your own payload format per channel (JSON recommended).
 
-`GET /health` returns channel stats as JSON.
+`GET /health` returns aggregates only, `{ok, channels, subscribers, publishers}` (counts). Channel names are never listed, because they double as share codes.
 
 ## Upstream messages (subscriber -> publisher)
 
@@ -39,13 +39,24 @@ A subscriber may send text JSON `{"relay":"up","data":{...}}`. The relay forward
 
 The relay does no auth on upstream messages; the publisher must check any password itself. Note that a publisher's replies (e.g. acks) go out like any publisher message: to all subscribers, and the last one is cached as late-joiner state.
 
-## Producer page: `GET /p/:token`
+## Stats (relay -> publisher)
 
-Serves `public/producer.html` (the same file for any token; the page reads the token from `location.pathname` and uses it as the channel, connecting as subscriber to the same host). Sent with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. No other static paths exist. It expects stage-timer `{type:"state",...}` / `{type:"ack",req,ok,error?}` messages from the publisher and sends `{relay:"up",data:{op:"auth"|"message"|"clear",req,password,...}}` upstream.
+Whenever a subscriber joins or leaves a channel, and right after a publisher connects, the relay sends every publisher of that channel the text message `{"relay":"stats","subscribers":<n>}`. Subscribers never receive it. It is not cached as channel state.
+
+## Stagetimer display pages
+
+`public/stagetimer/` is **synced from the stagetimer repo by its sync script** (see the README there) and committed so `make deploy` ships it. Don't edit it by hand.
+
+| Route | Serves |
+|---|---|
+| `GET /<code>` where code matches `^[2-9a-hjkmnp-z]{8}$` | `public/stagetimer/output.html` (`no-store`, `Referrer-Policy: no-referrer`). The page reads the share code from `location.pathname` and uses it as the channel (subscriber role). If `output.html` is missing: plain 503 `display pages not installed`. |
+| `GET /stagetimer/*` | Static files from `public/stagetimer/` (html, js, css, svg, png, json, woff2, ico). HTML is `no-store`, everything else `max-age=60`. No directory listing; path traversal is blocked (resolve + prefix check). |
+
+Anything else is 404. `STATIC_DIR` overrides the directory (used by tests).
 
 ### timer.trv.as
 
-In Nginx Proxy Manager: proxy host `timer.trv.as` -> this container's host port, **WebSockets Support ON**, SSL on, and **no Authentik forward-auth** on `/p/*` or the WebSocket (producers are external). Add the DNS record. The channel name is the secret "view token", so use long random tokens.
+In Nginx Proxy Manager: proxy host `timer.trv.as` -> this container's host port, **WebSockets Support ON**, SSL on, and **no Authentik forward-auth** (viewers are external). Add the DNS record. The 8-char share code is the secret, so keep `/health` aggregate-only.
 
 ## Items (shared & private, persisted)
 
