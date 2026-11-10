@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- stopwatch crown + button -->
+  <rect x="24" y="6" width="16" height="3" rx="1" fill="#6bf0ff"/>
+  <rect x="28" y="2" width="8" height="5" rx="1.5" fill="#6bf0ff"/>
+  <!-- body -->
+  <circle cx="32" cy="36" r="24" fill="#000" stroke="#6bf0ff" stroke-width="4"/>
+  <!-- countdown wedge (12 → 2 o'clock, red so it reads as "running out") -->
+  <path d="M 32 36 L 32 12 A 24 24 0 0 1 52.78 24 Z" fill="#ff3030"/>
+  <!-- cardinal tick marks -->
+  <line x1="32" y1="14" x2="32" y2="18" stroke="#6bf0ff" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="50" y1="36" x2="46" y2="36" stroke="#6bf0ff" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="32" y1="58" x2="32" y2="54" stroke="#6bf0ff" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="14" y1="36" x2="18" y2="36" stroke="#6bf0ff" stroke-width="2.5" stroke-linecap="round"/>
+  <!-- second hand resting at the edge of the red wedge -->
+  <line x1="32" y1="36" x2="48.45" y2="26.5" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/>
+  <!-- centre cap -->
+  <circle cx="32" cy="36" r="3" fill="#6bf0ff"/>
+</svg>

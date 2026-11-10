@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Stage Timer · Output</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+// Two modes: local /output/<id> (local WS, base "/") and relay /<8-char code> (relay WS, assets under /stagetimer/).
+const relayCode = (/^\/([2-9a-hjkmnp-z]{8})\/?$/.exec(location.pathname) || [])[1] || null;
+const BASE = relayCode ? '/stagetimer/' : '/';
+window.NO_LOCAL_WS = !!relayCode;
+document.write('<link rel="icon" type="image/svg+xml" href="' + BASE + 'favicon.svg">');
+</script>
+<style>html, body { margin:0; background:#000; }</style>
+<style id="layoutStyle"></style>
+<style>
+/* per-window toggles (classes set by outputHook below) */
+body.no-message #message { display:none !important; }
+body.no-clock #clockBottom { display:none !important; }
+body.no-title #mainTimerName, body.no-title #mainTimerSpeaker { display:none !important; }
+body.no-next #nextItem { display:none !important; }
+body.no-qlab #qlabSection { display:none !important; }
+/* key mode (bigclock only): digits alone on the key colour; warning state colours the digits, no glow */
+body.key #mainTimerProgress, body.key #mainTimerHeader, body.key #nextItem, body.key #clockBottom, body.key #bootHint { display:none !important; }
+body.key #mainTimerDigits { text-shadow:none !important; color:#fff; }
+body.key #mainTimerBlock.warn-yellow #mainTimerDigits { color:var(--warn); }
+body.key #mainTimerBlock.warn-red #mainTimerDigits, body.key #mainTimerBlock.overrun #mainTimerDigits { color:var(--danger); }
+body.key #mainTimerContent { text-shadow:none !important; }
+/* edit unlock (hidden on displays until the pointer moves; always shown in the Remote layout) */
+#unlock { position:fixed; right:8px; bottom:8px; z-index:50; font:14px system-ui,sans-serif; color:#e8ecf1; opacity:0; pointer-events:none; transition:opacity .3s; display:none; }
+#unlock.awake, #unlock.open { opacity:1; pointer-events:auto; }
+#unlock button, #unlock input[type=text], #unlock input[type=password] { font:inherit; padding:8px 12px; border-radius:8px; border:1px solid #2a313c; background:#171c24; color:#e8ecf1; margin:2px 0; }
+#unlock button.primary { background:#3b82f6; border-color:#3b82f6; }
+#ulBody { display:none; background:rgba(14,17,22,.95); border:1px solid #2a313c; border-radius:10px; padding:10px; width:min(340px,92vw); box-sizing:border-box; margin-bottom:6px; }
+#unlock.open #ulBody { display:block; }
+#ulBody input[type=text], #ulBody input[type=password] { width:100%; box-sizing:border-box; }
+#ulBody .r { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:4px; }
+#ulCtl { display:none; } #unlock.unlocked #ulCtl { display:block; } #unlock.unlocked #ulForm { display:none; }
+#ulErr { color:#ff6b6b; min-height:16px; font-size:13px; }
+body[data-layout=remote] #unlock { position:static; opacity:1; pointer-events:auto; margin-top:12px; }
+body[data-layout=remote] #ulBody { display:block; width:auto; background:#171c24; margin:0; }
+body[data-layout=remote] #ulToggle { display:none; }
+#unknown { position:fixed; inset:0; display:none; align-items:center; justify-content:center; color:#888; font:3vh sans-serif; text-align:center; }
+</style>
+</head>
+<body>
+<!-- One page per window: /output/<id> or /output.html?id=<id>. The layout comes from state.outputs
+     and is swapped live (no reload). Layout markup+CSS is fetched from the existing viewer pages
+     (lframe, pip) or /layouts/*.html, so viewer-core.js drives all of them. -->
+<div id="stage"></div>
+<div id="unknown"></div>
+<div id="unlock" data-nofs>
+  <div id="ulBody">
+    <div id="ulForm"><input id="ulPw" type="password" placeholder="Edit password" autocomplete="off"><div class="r"><button id="ulGo" class="primary">Unlock</button></div></div>
+    <div id="ulCtl">
+      <input id="ulText" type="text" maxlength="120" placeholder="Message to stage" autocomplete="off">
+      <div class="r"><button id="ulSend" class="primary">Send</button><button id="ulClear">Clear</button><label><input id="ulFlash" type="checkbox"> Flash</label></div>
+      <div class="r"><button data-op="start">Start</button><button data-op="pause">Pause</button><button data-op="reset">Reset</button></div>
+      <div class="r"><button data-adj="-60000">-1m</button><button data-adj="-10000">-10s</button><button data-adj="10000">+10s</button><button data-adj="60000">+1m</button></div>
+      <div class="r"><button data-op="next">Next item</button><button id="ulLock">Lock</button></div>
+    </div>
+    <div id="ulErr"></div>
+  </div>
+  <button id="ulToggle" title="Edit">Edit</button>
+</div>
+<script>document.write('<script src="' + BASE + 'js/viewer-core.js"><\/script>');</script>
+<script>
+let outId = relayCode ? '' : (new URLSearchParams(location.search).get('id') || (/^\/output\/([^/]+)/.exec(location.pathname) || [])[1] || '1');
+const SOURCES = { lframe: 'viewer.html', pip: 'viewer-pip.html', bigclock: 'layouts/bigclock.html', agenda: 'layouts/agenda.html', remote: 'layouts/remote.html' };
+let shown = null, loading = null, agSig = '', rmSig = '', relayWs = null, relayCanEdit = false, offset = null;
+
+async function applyLayout(layout) {
+  const html = await (await fetch(BASE + (SOURCES[layout] || SOURCES.lframe))).text();
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  $('layoutStyle').textContent = [...doc.querySelectorAll('style')].map(x => x.textContent).join('\n');
+  document.body.append($('unlock'));   // keep the edit panel out of the stage that is about to be replaced
+  document.getElementById('stage').replaceWith(document.adoptNode(doc.getElementById('stage')));
+  shown = layout; agSig = ''; rmSig = '';   // (re-render happens in the caller's finally, once `loading` is cleared)
+  document.body.dataset.layout = layout;
+  const slot = $('unlockSlot'); if (slot) slot.append($('unlock')); else document.body.append($('unlock'));
+}
+
+const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function renderAgenda(s, o) {
+  const ro = s.runningOrder || {};
+  const rows = (ro.items || []).map((it, i) => ({ it, i })).filter(r => !r.it.hidden);
+  const cur = rows.findIndex(r => r.i === (ro.currentIndex | 0));
+  const from = Math.max(0, cur - 1);
+  const list = rows.slice(from);
+  const sig = JSON.stringify([cur, o.showTitle, list.map(r => [r.it.id, r.it.name, r.it.speaker, r.it.startTime, r.it.durationMs])]);
+  if (sig === agSig) return;
+  agSig = sig;
+  const box = $('agenda'); if (!box) return;
+  box.innerHTML = list.length ? list.map((r, k) => {
+    const cls = from + k < cur ? 'past' : from + k === cur ? 'cur' : from + k === cur + 1 ? 'nxt' : '';
+    const dur = r.it.durationMs ? fmt(r.it.durationMs, true) : '';
+    return `<div class="agRow ${cls}"><div class="agTime">${esc(r.it.startTime)}</div>` +
+      `<div class="agName">${esc(r.it.name)}${r.it.speaker ? `<span class="agSpk">${esc(r.it.speaker)}</span>` : ''}</div>` +
+      `<div class="agDur">${dur}</div></div>`;
+  }).join('') : '<div class="agEmpty">No running order</div>';
+}
+
+function renderRemote(s) {
+  const ro = s.runningOrder || {};
+  const rows = (ro.items || []).map((it, i) => ({ it, i })).filter(r => !r.it.hidden);
+  const cur = ro.currentIndex | 0, nxt = rows.find(r => r.i > cur);
+  const sig = JSON.stringify([cur, rows.map(r => [r.it.id, r.it.name, r.it.speaker, r.it.startTime, r.it.endTime])]);
+  if (sig === rmSig) return;
+  rmSig = sig;
+  $('roList').innerHTML = rows.map(r => {
+    const st = r.i === cur ? 'live' : nxt && r.i === nxt.i ? 'next' : '';
+    const sub = [r.it.speaker, [r.it.startTime, r.it.endTime].filter(Boolean).join('-')].filter(Boolean).join(' · ');
+    return `<div class="row ${st}"><div class="t">${esc(r.it.name)}${sub ? `<small>${esc(sub)}</small>` : ''}</div><div class="tag">${st === 'live' ? 'LIVE' : st === 'next' ? 'NEXT' : ''}</div></div>`;
+  }).join('');
+}
+
+function renderNext(s) {
+  const ro = s.runningOrder || {}, items = ro.items || [];
+  const n = items.find((it, i) => i > (ro.currentIndex | 0) && !it.hidden);
+  const el = $('nextItem'); if (!el) return;
+  el.innerHTML = n ? `<b>Next</b>${esc(n.name)}${n.speaker ? ' · ' + esc(n.speaker) : ''}` : '';
+}
+
+// Called at the top of viewer-core's renderLayout(). false = layout DOM not ready, skip this render.
+window.outputHook = function (s) {
+  const o = (s.outputs || []).find(x => x.id === outId);
+  setCanEdit(relayCode ? relayCanEdit : s.editPw === 'set');
+  const unk = $('unknown');
+  unk.style.display = o ? 'none' : 'flex';
+  unk.textContent = o ? '' : `No output "${outId}" - create it on the controller (Screens)`;
+  if (!o) return false;
+  if (o.layout !== shown) {
+    if (!loading) loading = applyLayout(o.layout).then(() => { loading = null; renderLayout(); paintDigits(); }, e => { console.error(e); loading = null; });   // re-run: state may have moved on (e.g. another layout) while fetching
+    return false;
+  }
+  const b = document.body.classList;
+  b.toggle('no-message', !o.showMessage); b.toggle('no-clock', !o.showClock);
+  b.toggle('no-title', !o.showTitle); b.toggle('no-next', !o.showNext); b.toggle('no-qlab', !o.showQlab);
+  const key = o.layout === 'bigclock' && !!o.keyMode;
+  b.toggle('key', key);
+  document.documentElement.style.background = document.body.style.background = key ? (s.display.keyColor || '#00ff00') : '';
+  if (o.layout === 'agenda') renderAgenda(s, o);
+  if (o.layout === 'remote') renderRemote(s);
+  if (o.layout === 'bigclock' && o.showNext) renderNext(s);
+};
+
+// ---- relay mode: subscribe to this screen's published state ----
+if (relayCode) {
+  $('unknown').style.display = 'flex'; $('unknown').textContent = 'Connecting…';
+  (function conn() {
+    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/?channel=${relayCode}&role=subscriber`);
+    relayWs = ws;
+    ws.onmessage = e => {
+      let d; try { d = JSON.parse(e.data); } catch { return; }
+      if (d.type === 'ack') return onAck(d);
+      if (d.type !== 'state' || !d.display || !d.screen) return;       // stats and anything else: ignored
+      const raw = d.now - Date.now();                                  // venue clock - my clock; smoothed
+      offset = offset == null ? raw : offset * 0.8 + raw * 0.2; window.clockOffset = offset;
+      relayCanEdit = !!d.canEdit; outId = d.screen.id;
+      document.body.classList.add('connected');
+      applyState({ ...d.display, outputs: [d.screen] });
+    };
+    ws.onclose = () => { relayWs = null; document.body.classList.remove('connected'); setTimeout(conn, 1500); };
+  })();
+} else {
+  window.outputOnOpen = ws => ws.send(JSON.stringify({ type: 'hello', output: outId }));   // local viewer counting
+  window.outputOnMessage = d => { if (d.type === 'ack') onAck(d); };
+}
+
+// ---- edit unlock: password in sessionStorage only; ops go to the same handler locally (WS) and publicly (relay up) ----
+const pending = new Map();
+function onAck(d) { const f = pending.get(d.req); if (f) { pending.delete(d.req); f(d); } }
+const getPw = () => { try { return sessionStorage.getItem('st.pw') || ''; } catch { return ''; } };
+const setPw = v => { try { v ? sessionStorage.setItem('st.pw', v) : sessionStorage.removeItem('st.pw'); } catch {} };
+function sendOp(op, extra) {
+  return new Promise(res => {
+    const req = Math.random().toString(36).slice(2, 10);
+    const data = { op, req, password: getPw(), ...extra };
+    const t = setTimeout(() => { pending.delete(req); res({ ok: false, error: 'No response' }); }, 5000);
+    pending.set(req, a => { clearTimeout(t); res(a); });
+    const ws = relayCode ? relayWs : window.viewerWs;
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify(relayCode ? { relay: 'up', data } : { type: 'op', data }));
+    else { clearTimeout(t); pending.delete(req); res({ ok: false, error: 'Not connected' }); }
+  });
+}
+const ul = $('unlock'), ulErr = $('ulErr');
+function setCanEdit(on) { ul.style.display = on ? 'block' : 'none'; if (!on) { ul.classList.remove('open', 'unlocked'); setPw(''); } else if (getPw() && !ul.classList.contains('unlocked')) ul.classList.add('unlocked'); }
+async function run(op, extra) {
+  ulErr.textContent = '';
+  const a = await sendOp(op, extra);
+  if (!a.ok) { ulErr.textContent = a.error || 'Failed'; if (a.error === 'Wrong password') { setPw(''); ul.classList.remove('unlocked'); } }
+  return a;
+}
+$('ulToggle').onclick = () => ul.classList.toggle('open');
+$('ulGo').onclick = async () => {
+  setPw($('ulPw').value); $('ulPw').value = '';
+  const a = await run('auth');
+  if (a.ok) ul.classList.add('unlocked'); else setPw('');
+};
+$('ulPw').onkeydown = e => { if (e.key === 'Enter') $('ulGo').click(); };
+$('ulLock').onclick = () => { setPw(''); ul.classList.remove('unlocked'); ulErr.textContent = ''; };
+$('ulSend').onclick = async () => { const a = await run('message', { text: $('ulText').value, flash: $('ulFlash').checked }); if (a.ok) $('ulText').value = ''; };
+$('ulText').onkeydown = e => { if (e.key === 'Enter') $('ulSend').click(); };
+$('ulClear').onclick = () => run('clear');
+for (const b of ul.querySelectorAll('[data-op]')) b.onclick = () => run(b.dataset.op);
+for (const b of ul.querySelectorAll('[data-adj]')) b.onclick = () => run('adjust', { deltaMs: +b.dataset.adj });
+// displays: the control only shows after the pointer moves/taps (kiosk hides the cursor), then fades again
+let sleepT = null;
+const wake = () => { ul.classList.add('awake'); clearTimeout(sleepT); sleepT = setTimeout(() => ul.classList.remove('awake'), 4000); };
+for (const ev of ['pointermove', 'pointerdown']) document.addEventListener(ev, wake, { passive: true });
+</script>
+</body>
+</html>

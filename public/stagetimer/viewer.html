@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Stage Timer · HDMI Output</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+/* --------------------------------------------------------------------------
+   Layout (fixed frame; centre is the chroma-key area for PIP composite):
+
+      +-------------------------------------------------------+
+      | CLOCK (top)                                  SIDE     |
+      | QLAB                                         TIMERS   |
+      |  Running:  [name + remaining]                (stack)  |
+      |  Next:     [name + duration]                          |
+      |                                                       |
+      |                  [ chroma-key fill ]                  |
+      |                                                       |
+      |                                                       |
+      +-------------------------------------------------------+
+      | CLOCK (bottom)    [MAIN TIMER bar+digits]             |
+      +-------------------------------------------------------+
+
+   The chroma area is the centre — flat colour for the external mixer to
+   key the live PIP through. The frame (clock, QLab, side timers, bottom
+   strip) renders OPAQUE on top of a dark mask so the keyer cuts only
+   the centre, never the frame text.
+
+   All sub-second updates flow through one wall-clock-aligned heartbeat
+   (see heartbeat() below) so every digit on screen flips on the same
+   wall-second tick.
+   -------------------------------------------------------------------------- */
+:root {
+  --frame-bg: #000000;
+  --frame-fg: #ffffff;
+  --muted: rgba(255,255,255,0.65);
+  --accent: #6bf0ff;
+  --warn: #ffcc00;
+  --danger: #ff3030;
+  /* Chroma rectangle is anchored top-right, locked to 16:9, sized to
+     ~80% of the screen along its longer fit dimension. The sidebar +
+     bottom strip widths are derived from what's left over, so the L-
+     shaped frame always wraps around the chroma exactly. */
+  --chroma-w: min(85vw, calc(85vh * 16 / 9));
+  --chroma-h: calc(var(--chroma-w) * 9 / 16);
+  --frame-width: calc(100vw - var(--chroma-w));
+  --bottom-height: calc(100vh - var(--chroma-h));
+}
+html, body {
+  margin: 0; padding: 0;
+  overflow: hidden;
+  width: 100vw; height: 100vh;
+  background: #000;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  color: var(--frame-fg);
+  cursor: none;
+}
+#stage { position: relative; width: 100%; height: 100%; }
+
+/* Chroma rectangle — anchored to the top-right corner of the screen,
+   locked to 16:9, sized via the variables in :root so the L-shaped frame
+   to the left and below is whatever the remainder is. The mixer keyer
+   cuts only this rectangle's colour; the frame is solid #000. */
+#chroma {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: var(--chroma-w);
+  height: var(--chroma-h);
+  background: #00ff00;
+}
+
+/* --- Left sidebar: clock header + QLab + Timers (anchored bottom) --- */
+#leftFrame {
+  position: absolute;
+  top: 0; left: 0; bottom: var(--bottom-height);
+  width: var(--frame-width);
+  background: var(--frame-bg);
+  box-sizing: border-box;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+}
+#qlabSection,
+#timersSection {
+  padding: 1.6vh 1.5vw;
+  box-sizing: border-box;
+}
+#qlabSection { flex: 0 0 auto; }
+/* Spacer fills the gap so the Timers section is pinned to the bottom of
+   the sidebar. New timers appear from below the spacer. */
+#leftSpacer { flex: 1 1 auto; min-height: 0; }
+#timersSection {
+  flex: 0 0 auto;
+  border-top: 1px solid rgba(255,255,255,0.12);
+  overflow: hidden;
+}
+.sectionTitle {
+  font-size: 1.6vh;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.5vh;
+  border-bottom: 1px solid rgba(255,255,255,0.15);
+  padding-bottom: 0.4vh;
+}
+.cueRow {
+  position: relative;
+  padding: 0.6vh 0.8vw;
+  border-radius: 0.6vh;
+  overflow: hidden;
+  transform: translateY(0);
+  opacity: 1;
+  transition: transform 320ms cubic-bezier(0.2, 0.85, 0.35, 1.15),
+              opacity 240ms ease-out;
+}
+.cueRow.appearing {
+  transform: translateY(60%);
+  opacity: 0;
+}
+/* Progress fill behind the running cue's text — same idea as the main
+   timer bar but tucked behind the cue row so the cue itself reads as a
+   little progress capsule. Translucent so the cyan time text on top
+   stays legible. */
+.cueRow .cueProgress {
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 0%;
+  background: rgba(107, 240, 255, 0.22);
+  /* Width is updated 60×/s by smoothPaint(); only colour transitions. */
+  transition: background-color 360ms ease;
+  z-index: 0;
+}
+.cueRow.done .cueProgress { background: rgba(255, 48, 48, 0.35); }
+.cueRow .cueLabel,
+.cueRow .cueName,
+.cueRow .cueTime {
+  position: relative;
+  z-index: 1;
+}
+.cueRow .cueLabel {
+  font-size: 1.4vh;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.cueRow .cueName {
+  font-size: 1.8vh;
+  font-weight: 700;
+  margin-top: 0.2vh;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cueRow .cueTime {
+  font-variant-numeric: tabular-nums;
+  font-size: 2.6vh;
+  font-weight: 800;
+  margin-top: 0.2vh;
+  color: var(--accent);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5vw;
+}
+.cueRow .loopBadge {
+  font-size: 1.4vh;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 0.2vh 0.5vw;
+  border-radius: 0.4vh;
+  background: rgba(107, 240, 255, 0.22);
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+.cueRow .loopBadge.hidden { display: none; }
+.cueRow.next .cueTime { color: var(--muted); }
+.cueRow.done .cueTime { color: var(--danger); }
+.cueRow.empty .cueName { color: var(--muted); font-weight: 400; font-style: italic; }
+.cueRow.empty .cueTime { display: none; }
+.cueGroupLabel {
+  font-size: 1.4vh;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.4vh;
+  padding-left: 0.2vw;
+}
+#qlabRunning {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8vh;
+}
+#qlabRunning .cueRow .cueLabel { display: none; }   /* group label replaces per-row */
+#qlabRunning.empty .cueRow { font-style: italic; }
+#leftFrame.hidden { display: none; }
+
+/* --- Side timers — stacked bottom-up. Each row slides in from below the
+       sidebar when first added (the "pop up from the bottom" behaviour). */
+#sideTimersWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 1.4vh;
+}
+.sideTimer {
+  color: var(--frame-fg);
+  line-height: 1;
+  position: relative;
+  overflow: hidden;
+  padding: 0.5vh 0.6vw;
+  border-radius: 0.5vh;
+  transform: translateY(0);
+  opacity: 1;
+  transition: transform 320ms cubic-bezier(0.2, 0.85, 0.35, 1.15),
+              opacity 240ms ease-out;
+}
+.sideTimer.appearing {
+  transform: translateY(120%);
+  opacity: 0;
+}
+.sideTimer .stProgress {
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 0%;
+  background: rgba(107, 240, 255, 0.18);
+  transition: background-color 360ms ease;
+  z-index: 0;
+}
+.sideTimer.warn-yellow .stProgress { background: rgba(255, 204, 0, 0.22); }
+.sideTimer.warn-red    .stProgress,
+.sideTimer.overrun     .stProgress { background: rgba(255, 48, 48, 0.32); }
+.sideTimer.paused      .stProgress { opacity: 0.5; }
+.sideTimer .stName,
+.sideTimer .stTime { position: relative; z-index: 1; }
+.sideTimer .stName {
+  font-size: 1.4vh;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.sideTimer .stTime {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  font-size: 2.6vh;
+  margin-top: 0.2vh;
+}
+.sideTimer.warn-yellow .stTime { color: var(--warn); }
+.sideTimer.warn-red .stTime,
+.sideTimer.overrun .stTime { color: var(--danger); }
+.sideTimer.paused .stTime { opacity: 0.5; }
+#timersSection.hidden { display: none; }
+
+/* --- Bottom strip: clock + main timer with progress bar --- */
+#bottomStrip {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: var(--bottom-height);
+  background: var(--frame-bg);
+  display: flex;
+  align-items: stretch;
+  z-index: 4;
+  border-top: 1px solid rgba(255,255,255,0.1);
+}
+#clockBottom {
+  /* Match the left sidebar width so the clock column lines up vertically
+     with the QLab / Timers sidebar above. */
+  flex: 0 0 var(--frame-width);
+  width: var(--frame-width);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid rgba(255,255,255,0.1);
+  padding: 0 0.6vw;
+}
+#clockBottom.hidden { display: none; }
+/* Bottom-strip text sizes are anchored to --bottom-height so they
+   stay proportional to the strip whether the L is 15% or 20%. */
+#clockBottomLabel {
+  font-size: calc(var(--bottom-height) * 0.10);
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.4vh;
+}
+#clockBottomValue {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: calc(var(--bottom-height) * 0.32);
+  line-height: 1;
+}
+#mainTimerBlock {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: hidden;
+}
+/* The progress fill IS the indicator — it grows from left to right as the
+   presenter eats into their time slot. Colour shifts as we cross the
+   warning thresholds. Digits + header float on top. */
+#mainTimerProgress {
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 0%;
+  background: var(--accent);
+  /* Width updated 60×/s by smoothPaint(); only colour transitions. */
+  transition: background-color 360ms ease;
+  z-index: 0;
+}
+#mainTimerBlock.warn-yellow #mainTimerProgress { background: var(--warn); }
+#mainTimerBlock.warn-red    #mainTimerProgress { background: var(--danger); }
+#mainTimerBlock.overrun     #mainTimerProgress { background: var(--danger); width: 100% !important; }
+#mainTimerContent {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0.6vh 2vw;
+  box-sizing: border-box; /* height:100% must include padding or the digits spill below the strip */
+  /* Text shadow keeps the digits legible whether the bar is empty (dark
+     bg) or full (coloured bg) underneath. */
+  text-shadow: 0 0 18px rgba(0,0,0,0.55), 0 0 4px rgba(0,0,0,0.4);
+}
+#mainTimerHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1vw;
+  margin-bottom: 0.2vh;
+  color: var(--frame-fg);
+}
+/* long titles / speakers: one line, ellipsis (never wrap into the digits) */
+#mainTimerHeader > div:first-child { min-width: 0; flex: 1 1 auto; }
+#mainTimerName, #mainTimerSpeaker { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#mainTimerDuration { white-space: nowrap; flex: 0 0 auto; }
+#mainTimerName {
+  font-size: calc(var(--bottom-height) * 0.11);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+#mainTimerSpeaker {
+  font-size: calc(var(--bottom-height) * 0.10);
+  opacity: 0.75;
+  margin-top: 0.2vh;
+  display: none;
+}
+#mainTimerSpeaker.shown { display: block; }
+#mainTimerDuration {
+  font-variant-numeric: tabular-nums;
+  font-size: calc(var(--bottom-height) * 0.11);
+  opacity: 0.85;
+}
+#mainTimerDigits {
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
+  font-size: calc(var(--bottom-height) * 0.58);
+  line-height: 1;
+  letter-spacing: -0.02em;
+  text-align: center;
+  color: var(--frame-fg);
+  transition: opacity 480ms ease-in-out;
+}
+
+/* --- Message overlay: lives inside the bottom strip so the mixer's PIP
+   over the chroma area never hides it. Takes over the main timer block
+   when active. --- */
+#message {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: var(--bottom-height);
+  display: none;
+  align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.95);
+  color: #fff;
+  font-size: calc(var(--bottom-height) * 0.55);
+  font-weight: 900;
+  text-align: center;
+  padding: 0 2vw;
+  z-index: 20;
+  text-shadow: 0 0 30px rgba(0,0,0,0.6);
+  line-height: 1;
+}
+#message.show { display: flex; }
+#message.flash { animation: flash 0.6s infinite alternate; }
+@keyframes flash {
+  from { background: rgba(0,0,0,0.95); }
+  to   { background: rgba(180,0,0,0.95); }
+}
+
+/* Offline badge — top-left of sidebar (always outside the chroma area). */
+#offline {
+  position: absolute;
+  top: 8px; left: 8px;
+  font-size: 14px;
+  color: #fff;
+  background: rgba(0,0,0,0.7);
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: none;
+  z-index: 30;
+}
+/* Connecting hint — centred in the sidebar, not in the chroma area. */
+#bootHint {
+  position: absolute;
+  top: 0; left: 0; bottom: var(--bottom-height);
+  width: var(--frame-width);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.2vh;
+  color: rgba(255,255,255,0.55);
+  pointer-events: none;
+  text-align: center;
+  padding: 2vh;
+  box-sizing: border-box;
+}
+body.connected #bootHint { display: none; }
+
+/* PIP setup info — rendered inside the chroma rectangle. The mixer keys
+   the chroma out in production, so this is only visible during setup
+   when no PIP is composited over it. Hidden when chromaKey is off
+   (i.e., direct HDMI mode), since there's no key target to size. */
+#pipInfo {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  font-family: "SF Mono", "Menlo", "Consolas", monospace;
+  font-size: 1.6vh;
+  line-height: 1.45;
+  padding: 1.4vh 1.6vw;
+  border-radius: 0.6vh;
+  text-align: left;
+  white-space: pre;
+  pointer-events: none;
+  letter-spacing: 0.02em;
+}
+#pipInfo .pipTitle {
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-size: 1.3vh;
+  color: rgba(255,255,255,0.65);
+  margin-bottom: 0.6vh;
+}
+#pipInfo .pipHr {
+  height: 1px;
+  background: rgba(255,255,255,0.18);
+  margin: 0.6vh 0;
+}
+#pipInfo .pipKey { color: rgba(255,255,255,0.55); }
+#chroma.no-key #pipInfo { display: none; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="chroma">
+    <div id="pipInfo"></div>
+  </div>
+
+  <div id="leftFrame">
+    <div id="qlabSection">
+      <div class="sectionTitle">QLab</div>
+      <div id="qlabNext" class="cueRow next">
+        <div class="cueLabel">Next on GO</div>
+        <div class="cueName">—</div>
+        <div class="cueTime"></div>
+      </div>
+      <div id="qlabRunningWrap" style="margin-top:1.4vh;">
+        <div class="cueGroupLabel">Running</div>
+        <div id="qlabRunning"></div>
+      </div>
+    </div>
+    <div id="leftSpacer"></div>
+    <div id="timersSection">
+      <div class="sectionTitle">Timers</div>
+      <div id="sideTimersWrap"></div>
+    </div>
+  </div>
+
+  <div id="bottomStrip">
+    <div id="clockBottom">
+      <div id="clockBottomLabel">Time of day</div>
+      <div id="clockBottomValue">00:00:00</div>
+    </div>
+    <div id="mainTimerBlock">
+      <div id="mainTimerProgress"></div>
+      <div id="mainTimerContent">
+        <div id="mainTimerHeader">
+          <div>
+            <div id="mainTimerName">MAIN</div>
+            <div id="mainTimerSpeaker"></div>
+          </div>
+          <div id="mainTimerDuration">/ 00:00</div>
+        </div>
+        <div id="mainTimerDigits">00:00</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="message"></div>
+  <div id="offline">disconnected</div>
+  <div id="bootHint">connecting to stage timer…</div>
+</div>
+
+<script src="/js/viewer-core.js"></script>
+</body>
+</html>

@@ -1,0 +1,58 @@
+<!doctype html>
+<!-- Fragment for /output.html (layout "bigclock"): only <style> and #stage are used.
+     Keeps the DOM ids viewer-core.js drives (it is the sole digit writer). -->
+<style>
+:root { --frame-bg:#000; --frame-fg:#fff; --muted:rgba(255,255,255,.65); --accent:#6bf0ff; --warn:#ffcc00; --danger:#ff3030; }
+html, body { margin:0; width:100vw; height:100vh; overflow:hidden; background:#000; color:#fff; cursor:none;
+  font-family:"Helvetica Neue",Helvetica,Arial,sans-serif; }
+#stage { position:relative; width:100%; height:100%; }
+#mainTimerBlock { position:absolute; inset:0; overflow:hidden; }
+#mainTimerProgress { position:absolute; top:0; bottom:0; left:0; width:0%; background:var(--accent); opacity:.9; transition:background-color 360ms ease; }
+#mainTimerBlock.warn-yellow #mainTimerProgress { background:var(--warn); }
+#mainTimerBlock.warn-red #mainTimerProgress, #mainTimerBlock.overrun #mainTimerProgress { background:var(--danger); }
+#mainTimerBlock.overrun #mainTimerProgress { width:100% !important; }
+#mainTimerContent { position:relative; height:100%; box-sizing:border-box; padding:4vh 4vw; display:flex; flex-direction:column;
+  justify-content:center; text-shadow:0 0 24px rgba(0,0,0,.55), 0 0 4px rgba(0,0,0,.4); }
+#mainTimerHeader { display:flex; justify-content:space-between; align-items:baseline; gap:2vw; }
+#mainTimerHeader > div:first-child { min-width:0; flex:1 1 auto; }
+#mainTimerName, #mainTimerSpeaker { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#mainTimerName { font-size:5vh; letter-spacing:.2em; text-transform:uppercase; opacity:.9; }
+#mainTimerSpeaker { font-size:3.6vh; opacity:.8; display:none; margin-top:.4vh; }
+#mainTimerSpeaker.shown { display:block; }
+#mainTimerDuration { font-size:5vh; font-variant-numeric:tabular-nums; opacity:.85; white-space:nowrap; flex:0 0 auto; }
+#mainTimerDigits { font-variant-numeric:tabular-nums; font-weight:900; font-size:min(44vh, 26vw); line-height:1; letter-spacing:-.02em;
+  text-align:center; margin:2vh 0; transition:opacity 480ms ease-in-out; }
+#nextItem { font-size:3.6vh; text-align:center; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-height:4.4vh; }
+#nextItem b { color:var(--muted); letter-spacing:.2em; text-transform:uppercase; font-size:.7em; margin-right:1vw; }
+#clockBottom { position:absolute; top:2vh; right:3vw; text-align:right; z-index:2; }
+#clockBottomLabel { display:none; }
+#clockBottomValue { font-variant-numeric:tabular-nums; font-weight:700; font-size:4.6vh; }
+#clockBottom.hidden { display:none; }
+#sideTimersWrap, #timersSection { display:none; }
+#message { position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.96); color:#fff;
+  font-size:22vh; font-weight:900; text-align:center; padding:0 4vw; z-index:20; line-height:1.05; }
+#message.show { display:flex; }
+#message.flash { animation:flash .6s infinite alternate; }
+@keyframes flash { from { background:rgba(0,0,0,.96); } to { background:rgba(180,0,0,.96); } }
+#offline { position:absolute; top:8px; left:8px; font-size:14px; background:rgba(0,0,0,.7); padding:4px 8px; border-radius:4px; display:none; z-index:30; }
+#bootHint { position:absolute; bottom:2vh; left:0; right:0; text-align:center; font-size:2vh; color:rgba(255,255,255,.55); }
+body.connected #bootHint { display:none; }
+</style>
+<div id="stage">
+  <div id="mainTimerBlock">
+    <div id="mainTimerProgress"></div>
+    <div id="mainTimerContent">
+      <div id="mainTimerHeader">
+        <div><div id="mainTimerName">MAIN</div><div id="mainTimerSpeaker"></div></div>
+        <div id="mainTimerDuration">/ 00:00</div>
+      </div>
+      <div id="mainTimerDigits">00:00</div>
+      <div id="nextItem"></div>
+    </div>
+  </div>
+  <div id="clockBottom"><div id="clockBottomLabel">Time of day</div><div id="clockBottomValue">00:00:00</div></div>
+  <div id="timersSection"><div id="sideTimersWrap"></div></div>
+  <div id="message"></div>
+  <div id="offline">disconnected</div>
+  <div id="bootHint">connecting to stage timer…</div>
+</div>

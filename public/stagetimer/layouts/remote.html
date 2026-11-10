@@ -1,0 +1,46 @@
+<!doctype html>
+<!-- Fragment for /output.html (layout "remote"): phone-friendly page for producers, local or via the public link.
+     Only <style> and #stage are used; keeps the DOM ids viewer-core.js drives. The edit panel (#unlock) is moved into #unlockSlot by output.html. -->
+<style>
+:root { --frame-bg:#0e1116; --frame-fg:#e8ecf1; --muted:#9aa4b2; --accent:#3b82f6; --ok:#35d07f; --warn:#f5c542; --danger:#ff4d4d; --panel:#171c24; --border:#2a313c; }
+html, body { margin:0; background:#0e1116 !important; color:#e8ecf1; overflow:auto; height:auto; font:16px system-ui,-apple-system,sans-serif; }
+#stage { box-sizing:border-box; max-width:640px; margin:0 auto; padding:12px; }
+.card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px; margin-top:12px; }
+#rmBar { display:flex; justify-content:space-between; color:var(--muted); font-size:14px; }
+#clockBottom { position:static; } #clockBottomLabel { display:inline; margin-right:6px; } #clockBottomValue { font-variant-numeric:tabular-nums; font-weight:600; font-size:inherit; }
+#clockBottom.hidden { display:none; }
+#mainTimerBlock { position:relative; overflow:hidden; }
+#mainTimerContent { position:relative; }
+#mainTimerHeader { display:flex; justify-content:space-between; gap:8px; color:var(--muted); font-size:14px; }
+#mainTimerName { letter-spacing:.12em; } #mainTimerSpeaker { display:none; } #mainTimerSpeaker.shown { display:block; }
+#mainTimerDigits { font:700 22vw/1.1 ui-monospace,Menlo,monospace; font-variant-numeric:tabular-nums; text-align:center; color:var(--ok); transition:opacity 480ms ease-in-out; }
+@media (min-width:640px) { #mainTimerDigits { font-size:130px; } }
+#mainTimerBlock.warn-yellow #mainTimerDigits { color:var(--warn); }
+#mainTimerBlock.warn-red #mainTimerDigits, #mainTimerBlock.overrun #mainTimerDigits { color:var(--danger); }
+#mainTimerProgress { height:6px; width:0%; background:var(--ok); border-radius:3px; }
+#mainTimerBlock.warn-yellow #mainTimerProgress { background:var(--warn); }
+#mainTimerBlock.warn-red #mainTimerProgress, #mainTimerBlock.overrun #mainTimerProgress { background:var(--danger); }
+#message { display:none; font-size:22px; font-weight:800; text-align:center; word-break:break-word; }
+#message.show { display:block; } #message.flash { animation:rmflash .6s infinite alternate; }
+@keyframes rmflash { from { background:var(--panel); } to { background:#5a1010; } }
+#roList .row { display:flex; gap:8px; padding:8px 6px; border-top:1px solid var(--border); font-size:15px; }
+#roList .row:first-child { border-top:0; } #roList .t { flex:1; } #roList small { display:block; color:var(--muted); }
+#roList .row.live { background:#12301f; border-radius:6px; } #roList .row.next { background:#2a2410; border-radius:6px; }
+#roList .tag { font-size:11px; font-weight:700; align-self:center; } #roList:empty { display:none; }
+#sideTimersWrap, #timersSection { display:none; } #offline, #bootHint { display:none; }
+</style>
+<div id="stage">
+  <div id="rmBar"><span>Stage timer</span><span id="clockBottom"><span id="clockBottomLabel">Time</span><span id="clockBottomValue">00:00:00</span></span></div>
+  <div id="mainTimerBlock" class="card">
+    <div id="mainTimerContent">
+      <div id="mainTimerHeader"><div><div id="mainTimerName">MAIN</div><div id="mainTimerSpeaker"></div></div><div id="mainTimerDuration">/ 00:00</div></div>
+      <div id="mainTimerDigits">00:00</div>
+      <div id="mainTimerProgress"></div>
+    </div>
+  </div>
+  <div id="message" class="card"></div>
+  <div id="unlockSlot"></div>
+  <div id="roList" class="card"></div>
+  <div id="timersSection"><div id="sideTimersWrap"></div></div>
+  <div id="offline"></div><div id="bootHint"></div>
+</div>

@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Stage Timer · PIP Source</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+/* --------------------------------------------------------------------------
+   PIP layout. This whole frame is intended to be fed into a switcher as a
+   single source and PIP'd into a corner of the program output (vs. the
+   L-frame in viewer.html, which is the program background with a chroma
+   rectangle that the talent camera gets keyed into).
+
+      +-------------------------------------------------------+
+      | QLab [Next / Running] strip                  CLOCK    |  ← top (~10vh)
+      +-------------------------------------------------------+
+      |                                                       |
+      |   timer name                    / 00:30:00            |
+      |   speaker                                             |
+      |                                                       |
+      |               H H : M M : S S                         |  ← main (~80vh)
+      |                                                       |
+      |  ████████████████░░░░░░░░░░░░░░░░░░  (progress fill) |
+      |                                                       |
+      +-------------------------------------------------------+
+      | Side timers strip (only present if any are running)   |  ← footer (~10vh)
+      +-------------------------------------------------------+
+
+   Reuses every DOM ID from viewer.html so the shared script in
+   /js/viewer-core.js drives both pages without modification.
+   -------------------------------------------------------------------------- */
+:root {
+  --frame-bg: #000000;
+  --frame-fg: #ffffff;
+  --muted: rgba(255,255,255,0.65);
+  --accent: #6bf0ff;
+  --warn: #ffcc00;
+  --danger: #ff3030;
+  --top-height: 10vh;
+  --footer-height: 10vh;
+  --bottom-height: calc(100vh - var(--top-height) - var(--footer-height));
+  --frame-width: 100vw;   /* the top/bottom strips are full-width */
+}
+html, body {
+  margin: 0; padding: 0;
+  overflow: hidden;
+  width: 100vw; height: 100vh;
+  background: #000;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  color: var(--frame-fg);
+  cursor: none;
+}
+#stage { position: relative; width: 100%; height: 100%; }
+
+/* --- TOP STRIP: QLab + wall clock. Repurposes #leftFrame in horizontal
+   flex mode so it spans the full top. data-role lets the shared script
+   skip its "hide leftFrame if QLab disabled" branch — this strip stays
+   visible because it also hosts the wall clock. */
+#leftFrame {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: var(--top-height);
+  background: var(--frame-bg);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+  z-index: 4;
+}
+#qlabSection {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 1.4vw;
+  padding: 0.4vh 1.2vw;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+#qlabSection .sectionTitle {
+  flex: 0 0 auto;
+  font-size: 1.2vh;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 0;
+  padding-bottom: 0;
+  margin-bottom: 0;
+}
+#qlabRunningWrap {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.8vw;
+  margin-top: 0 !important;
+  overflow: hidden;
+}
+#qlabRunningWrap .cueGroupLabel { display: none; }
+#qlabRunning {
+  display: flex;
+  flex-direction: row;
+  gap: 0.8vw;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+.cueRow {
+  position: relative;
+  padding: 0.4vh 0.8vw;
+  border-radius: 0.6vh;
+  overflow: hidden;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.cueRow.appearing { opacity: 0; }
+.cueRow { transition: opacity 240ms ease-out; opacity: 1; }
+.cueRow .cueProgress {
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 0%;
+  background: rgba(107, 240, 255, 0.22);
+  transition: background-color 360ms ease;
+  z-index: 0;
+}
+.cueRow.done .cueProgress { background: rgba(255, 48, 48, 0.35); }
+.cueRow .cueLabel,
+.cueRow .cueName,
+.cueRow .cueTime { position: relative; z-index: 1; }
+#qlabNext { display: flex; flex-direction: row; align-items: center; gap: 0.5vw; flex: 0 1 auto; }
+#qlabNext .cueLabel {
+  font-size: 1.2vh;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+#qlabNext .cueName,
+#qlabRunning .cueRow .cueName {
+  font-size: 1.8vh;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 24vw;
+}
+#qlabNext .cueTime,
+#qlabRunning .cueRow .cueTime {
+  font-variant-numeric: tabular-nums;
+  font-size: 2vh;
+  font-weight: 800;
+  color: var(--accent);
+  display: flex;
+  align-items: baseline;
+  gap: 0.4vw;
+}
+.cueRow.next .cueTime { color: var(--muted); }
+.cueRow.done .cueTime { color: var(--danger); }
+.cueRow.empty .cueName { color: var(--muted); font-weight: 400; font-style: italic; }
+.cueRow.empty .cueTime { display: none; }
+.cueRow .loopBadge {
+  font-size: 1.2vh;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0.15vh 0.4vw;
+  border-radius: 0.4vh;
+  background: rgba(107, 240, 255, 0.22);
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+.cueRow .loopBadge.hidden { display: none; }
+
+#clockBottom {
+  flex: 0 0 auto;
+  padding: 0 1.4vw;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-end;
+  border-left: 1px solid rgba(255,255,255,0.12);
+}
+#clockBottom.hidden { display: none; }
+#clockBottomLabel {
+  font-size: 1.2vh;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.2vh;
+}
+#clockBottomValue {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: 4.2vh;
+  line-height: 1;
+}
+
+/* --- MAIN AREA (#bottomStrip): big timer dominating the centre. --- */
+#bottomStrip {
+  position: absolute;
+  top: var(--top-height);
+  left: 0; right: 0;
+  height: var(--bottom-height);
+  background: var(--frame-bg);
+  display: flex;
+  z-index: 3;
+}
+#mainTimerBlock {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: hidden;
+}
+#mainTimerProgress {
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 0%;
+  background: var(--accent);
+  transition: background-color 360ms ease;
+  z-index: 0;
+}
+#mainTimerBlock.warn-yellow #mainTimerProgress { background: var(--warn); }
+#mainTimerBlock.warn-red    #mainTimerProgress { background: var(--danger); }
+#mainTimerBlock.overrun     #mainTimerProgress { background: var(--danger); width: 100% !important; }
+#mainTimerContent {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 2vh 4vw;
+  text-shadow: 0 0 24px rgba(0,0,0,0.55), 0 0 4px rgba(0,0,0,0.4);
+}
+#mainTimerHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2vw;
+  margin-bottom: 1.5vh;
+  color: var(--frame-fg);
+}
+#mainTimerName {
+  font-size: 4vh;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  opacity: 0.9;
+}
+#mainTimerSpeaker {
+  font-size: 3vh;
+  opacity: 0.75;
+  margin-top: 0.4vh;
+  display: none;
+}
+#mainTimerSpeaker.shown { display: block; }
+#mainTimerDuration {
+  font-variant-numeric: tabular-nums;
+  font-size: 4vh;
+  opacity: 0.9;
+  white-space: nowrap;
+}
+/* The digit needs to fit both ways: short enough not to overflow vertically
+   in the main strip, narrow enough not to overflow horizontally. Use the
+   smaller of "fraction of height" and "fraction of width" so M:SS, MM:SS
+   and H:MM:SS all look right. */
+#mainTimerDigits {
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
+  font-size: min(60vh, 22vw);
+  line-height: 1;
+  letter-spacing: -0.02em;
+  text-align: center;
+  color: var(--frame-fg);
+  transition: opacity 480ms ease-in-out;
+  margin-top: auto;
+  margin-bottom: auto;
+}
+
+/* --- FOOTER STRIP: side timers, horizontal layout. Hidden via the shared
+   script's #timersSection.hidden when no timers are running. --- */
+#timersSection {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: var(--footer-height);
+  background: var(--frame-bg);
+  border-top: 1px solid rgba(255,255,255,0.12);
+  padding: 0 1.2vw;
+  box-sizing: border-box;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+#timersSection .sectionTitle {
+  flex: 0 0 auto;
+  font-size: 1.2vh;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-right: 1.2vw;
+  margin-bottom: 0;
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+#sideTimersWrap {
+  display: flex;
+  flex-direction: row;
+  gap: 1.4vw;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+.sideTimer {
+  color: var(--frame-fg);
+  line-height: 1;
+  position: relative;
+  overflow: hidden;
+  padding: 0.6vh 0.8vw;
+  border-radius: 0.5vh;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6vw;
+  flex: 0 0 auto;
+  transition: opacity 240ms ease-out;
+  opacity: 1;
+}
+.sideTimer.appearing { opacity: 0; }
+.sideTimer .stProgress {
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 0%;
+  background: rgba(107, 240, 255, 0.18);
+  transition: background-color 360ms ease;
+  z-index: 0;
+}
+.sideTimer.warn-yellow .stProgress { background: rgba(255, 204, 0, 0.22); }
+.sideTimer.warn-red    .stProgress,
+.sideTimer.overrun     .stProgress { background: rgba(255, 48, 48, 0.32); }
+.sideTimer.paused      .stProgress { opacity: 0.5; }
+.sideTimer .stName,
+.sideTimer .stTime { position: relative; z-index: 1; }
+.sideTimer .stName {
+  font-size: 1.4vh;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.sideTimer .stTime {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  font-size: 3vh;
+}
+.sideTimer.warn-yellow .stTime { color: var(--warn); }
+.sideTimer.warn-red    .stTime,
+.sideTimer.overrun     .stTime { color: var(--danger); }
+.sideTimer.paused      .stTime { opacity: 0.5; }
+#timersSection.hidden { display: none; }
+
+/* --- Message overlay covers the WHOLE frame because the whole frame is
+   the PIP source. While a message is showing, it should fully replace
+   the timer everywhere. --- */
+#message {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.96);
+  color: #fff;
+  font-size: 18vh;
+  font-weight: 900;
+  text-align: center;
+  padding: 0 4vw;
+  z-index: 30;
+  text-shadow: 0 0 30px rgba(0,0,0,0.6);
+  line-height: 1.05;
+}
+#message.show { display: flex; }
+#message.flash { animation: flash 0.6s infinite alternate; }
+@keyframes flash {
+  from { background: rgba(0,0,0,0.96); }
+  to   { background: rgba(180,0,0,0.96); }
+}
+
+#offline {
+  position: absolute;
+  top: 0.4vh; right: 0.4vw;
+  font-size: 1.2vh;
+  color: #fff;
+  background: rgba(180,0,0,0.8);
+  padding: 0.2vh 0.6vw;
+  border-radius: 0.4vh;
+  display: none;
+  z-index: 40;
+}
+#bootHint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 3vh;
+  color: rgba(255,255,255,0.45);
+  pointer-events: none;
+}
+body.connected #bootHint { display: none; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="leftFrame" data-role="top-strip">
+    <div id="qlabSection">
+      <div class="sectionTitle">QLab</div>
+      <div id="qlabNext" class="cueRow next">
+        <div class="cueLabel">Next</div>
+        <div class="cueName">—</div>
+        <div class="cueTime"></div>
+      </div>
+      <div id="qlabRunningWrap" style="margin-top:0;">
+        <div class="cueGroupLabel">Running</div>
+        <div id="qlabRunning"></div>
+      </div>
+    </div>
+    <div id="clockBottom">
+      <div id="clockBottomLabel">Time of day</div>
+      <div id="clockBottomValue">00:00:00</div>
+    </div>
+  </div>
+
+  <div id="bottomStrip">
+    <div id="mainTimerBlock">
+      <div id="mainTimerProgress"></div>
+      <div id="mainTimerContent">
+        <div id="mainTimerHeader">
+          <div>
+            <div id="mainTimerName">MAIN</div>
+            <div id="mainTimerSpeaker"></div>
+          </div>
+          <div id="mainTimerDuration">/ 00:00</div>
+        </div>
+        <div id="mainTimerDigits">00:00</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="timersSection">
+    <div class="sectionTitle">Timers</div>
+    <div id="sideTimersWrap"></div>
+  </div>
+
+  <div id="message"></div>
+  <div id="offline">disconnected</div>
+  <div id="bootHint">connecting to stage timer…</div>
+</div>
+<script src="/js/viewer-core.js"></script>
+</body>
+</html>

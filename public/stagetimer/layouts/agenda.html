@@ -1,0 +1,68 @@
+<!doctype html>
+<!-- Fragment for /output.html (layout "agenda"): read-only running order.
+     Top bar keeps the viewer-core ids (timer digits + clock); rows are filled by output.html. -->
+<style>
+:root { --frame-bg:#000; --frame-fg:#fff; --muted:rgba(255,255,255,.65); --accent:#6bf0ff; --warn:#ffcc00; --danger:#ff3030; }
+html, body { margin:0; width:100vw; height:100vh; overflow:hidden; background:#000; color:#fff; cursor:none;
+  font-family:"Helvetica Neue",Helvetica,Arial,sans-serif; }
+#stage { position:relative; width:100%; height:100%; display:flex; flex-direction:column; }
+#mainTimerBlock { flex:0 0 16vh; position:relative; overflow:hidden; border-bottom:1px solid rgba(255,255,255,.15); }
+#mainTimerProgress { position:absolute; top:0; bottom:0; left:0; width:0%; background:rgba(107,240,255,.35); transition:background-color 360ms ease; }
+#mainTimerBlock.warn-yellow #mainTimerProgress { background:rgba(255,204,0,.45); }
+#mainTimerBlock.warn-red #mainTimerProgress, #mainTimerBlock.overrun #mainTimerProgress { background:rgba(255,48,48,.5); }
+#mainTimerBlock.overrun #mainTimerProgress { width:100% !important; }
+#mainTimerContent { position:relative; height:100%; box-sizing:border-box; padding:0 3vw; display:flex; align-items:center; gap:3vw; }
+#mainTimerHeader { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; }
+#mainTimerHeader > div:first-child { min-width:0; }
+#mainTimerName, #mainTimerSpeaker { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#mainTimerName { font-size:3.4vh; letter-spacing:.2em; text-transform:uppercase; }
+#mainTimerSpeaker { font-size:2.6vh; opacity:.8; display:none; }
+#mainTimerSpeaker.shown { display:block; }
+#mainTimerDuration { font-size:2.6vh; opacity:.8; font-variant-numeric:tabular-nums; }
+#mainTimerDigits { flex:0 0 auto; order:3; font-variant-numeric:tabular-nums; font-weight:900; font-size:11vh; line-height:1; transition:opacity 480ms ease-in-out; }
+#clockBottom { flex:0 0 auto; order:2; text-align:right; }
+#clockBottomLabel { display:none; }
+#clockBottomValue { font-variant-numeric:tabular-nums; font-weight:700; font-size:4vh; }
+#clockBottom.hidden { display:none; }
+#sideTimersWrap, #timersSection { display:none; }
+#agenda { flex:1 1 auto; min-height:0; overflow:hidden; padding:1.5vh 3vw; box-sizing:border-box; display:flex; flex-direction:column; gap:1vh; }
+.agRow { flex:0 0 auto; display:grid; grid-template-columns:9vw 1fr auto; align-items:baseline; gap:2vw; padding:1.2vh 1.5vw;
+  border-radius:1vh; font-size:3.4vh; border-left:.7vh solid transparent; }
+.agRow .agTime { color:var(--muted); font-variant-numeric:tabular-nums; }
+.agRow .agName { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700; }
+.agRow .agSpk { font-weight:400; color:var(--muted); margin-left:1.5vw; font-size:.8em; }
+.agRow .agDur { color:var(--muted); font-variant-numeric:tabular-nums; }
+.agRow.past { opacity:.35; }
+.agRow.cur { background:rgba(107,240,255,.16); border-left-color:var(--accent); font-size:4.4vh; }
+.agRow.cur .agTime, .agRow.cur .agDur { color:var(--accent); }
+.agRow.nxt { background:rgba(255,255,255,.06); }
+.agEmpty { color:var(--muted); font-size:3vh; font-style:italic; padding:3vh 0; }
+#nextItem { display:none; }
+#message { position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.96); color:#fff;
+  font-size:20vh; font-weight:900; text-align:center; padding:0 4vw; z-index:20; line-height:1.05; }
+#message.show { display:flex; }
+#message.flash { animation:flash .6s infinite alternate; }
+@keyframes flash { from { background:rgba(0,0,0,.96); } to { background:rgba(180,0,0,.96); } }
+#offline { position:absolute; top:8px; left:8px; font-size:14px; background:rgba(0,0,0,.7); padding:4px 8px; border-radius:4px; display:none; z-index:30; }
+#bootHint { position:absolute; bottom:2vh; left:0; right:0; text-align:center; font-size:2vh; color:rgba(255,255,255,.55); }
+body.connected #bootHint { display:none; }
+</style>
+<div id="stage">
+  <div id="mainTimerBlock">
+    <div id="mainTimerProgress"></div>
+    <div id="mainTimerContent">
+      <div id="mainTimerHeader">
+        <div><div id="mainTimerName">MAIN</div><div id="mainTimerSpeaker"></div></div>
+        <div id="mainTimerDuration">/ 00:00</div>
+      </div>
+      <div id="clockBottom"><div id="clockBottomLabel">Time of day</div><div id="clockBottomValue">00:00:00</div></div>
+      <div id="mainTimerDigits">00:00</div>
+    </div>
+  </div>
+  <div id="agenda"></div>
+  <div id="nextItem"></div>
+  <div id="timersSection"><div id="sideTimersWrap"></div></div>
+  <div id="message"></div>
+  <div id="offline">disconnected</div>
+  <div id="bootHint">connecting to stage timer…</div>
+</div>
