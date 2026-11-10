@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Producer</title>
+<style>
+:root { --bg:#0e1116; --panel:#171c24; --border:#2a313c; --fg:#e8ecf1; --muted:#9aa4b2; --ok:#35d07f; --yellow:#f5c542; --red:#ff4d4d; --accent:#3b82f6; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:16px system-ui,sans-serif; padding:12px; max-width:640px; margin:0 auto; }
+.bar { display:flex; justify-content:space-between; color:var(--muted); font-size:14px; }
+#conn::before { content:'●'; margin-right:6px; color:var(--red); } #conn.on::before { color:var(--ok); }
+.card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px; margin-top:12px; }
+#tname { color:var(--muted); font-size:14px; }
+#time { font:700 22vw/1.1 ui-monospace,monospace; font-variant-numeric:tabular-nums; text-align:center; }
+@media (min-width:640px) { #time { font-size:130px; } }
+#time.ok { color:var(--ok); } #time.yellow { color:var(--yellow); } #time.red,#time.over { color:var(--red); }
+#time.over { animation:blink 1s steps(2) infinite; } @keyframes blink { 50% { opacity:.4; } }
+.row { display:flex; gap:8px; padding:8px 6px; border-top:1px solid var(--border); font-size:15px; }
+.row:first-child { border-top:0; } .row .t { flex:1; } .row small { display:block; color:var(--muted); }
+.row.live { background:#12301f; border-radius:6px; } .row.next { background:#2a2410; border-radius:6px; }
+.tag { font-size:11px; font-weight:700; align-self:center; }
+input[type=text] { width:100%; padding:12px; font-size:16px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--fg); }
+button { padding:10px 14px; font-size:15px; border-radius:8px; border:1px solid var(--border); background:var(--panel); color:var(--fg); }
+button.primary { background:var(--accent); border-color:var(--accent); }
+.btns { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; align-items:center; }
+[hidden] { display:none !important; }
+#rows:empty { display:none; }
+#cur { color:var(--muted); font-size:14px; margin-top:8px; } #err { color:var(--red); font-size:14px; min-height:18px; }
+</style>
+</head>
+<body>
+<div class="bar"><span id="conn">Connecting</span><span id="clock"></span></div>
+<div class="card"><div id="tname"></div><div id="time" class="ok">--:--</div></div>
+<div class="card" id="lockcard">
+  <div class="btns" style="margin-top:0"><span id="lockmsg">View only.</span><button id="unlock">Unlock editing</button></div>
+  <div class="btns" id="pwrow" hidden><input id="pw" type="password" placeholder="Edit password" autocomplete="off" style="flex:1;padding:10px;font-size:16px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--fg)"><button id="pwgo" class="primary">Unlock</button></div>
+  <div id="err0" style="color:var(--red);font-size:14px;min-height:18px"></div>
+</div>
+<div class="card" id="editcard" hidden>
+  <input id="text" type="text" maxlength="120" placeholder="Message to stage" autocomplete="off">
+  <div class="btns">
+    <button id="send" class="primary">Send</button><button id="clear">Clear</button><button id="lock">Lock</button>
+    <label><input id="flash" type="checkbox"> Flash</label>
+  </div>
+  <div class="btns" id="quick"></div>
+  <div id="err"></div><div id="cur"></div>
+</div>
+<div class="card" id="rows"></div>
+<script>
+// ---- page logic: render(stateJson) in, send({text,flash}|{clear:true}) out. Transport is below. ----
+const $ = id => document.getElementById(id);
+let S = null, at = 0;
+const pad = n => String(n).padStart(2, '0');
+function fmt(ms) {
+  const neg = ms < 0, s = Math.ceil(Math.abs(ms) / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return (neg ? '+' : '') + (h ? h + ':' + pad(m) : pad(m)) + ':' + pad(s % 60);
+}
+function render(s) { // call with each new {type:'state'} message
+  S = s; at = Date.now();
+  if (!s.canEdit) { $('unlock').hidden = true; $('lockmsg').textContent = 'View only (editing is disabled on this link).'; }
+  $('tname').textContent = s.timer.name;
+  $('cur').textContent = s.message.visible && s.message.text ? 'On stage: "' + s.message.text + '"' : 'No message on stage.';
+  const box = $('rows'); box.textContent = '';
+  for (const r of s.rows) {
+    const d = document.createElement('div'); d.className = 'row ' + r.state;
+    const t = document.createElement('div'); t.className = 't';
+    t.textContent = r.title; const sm = document.createElement('small');
+    sm.textContent = [r.speaker, [r.start, r.end].filter(Boolean).join('–')].filter(Boolean).join(' · '); t.append(sm);
+    const g = document.createElement('div'); g.className = 'tag'; g.textContent = r.state === 'live' ? 'LIVE' : r.state === 'next' ? 'NEXT' : '';
+    d.append(t, g); box.append(d);
+  }
+}
+function tick() { // local 1 Hz-ish interpolation between pushes
+  if (!S) return;
+  const t = S.timer, left = t.remainingMs - (t.running ? Date.now() - at : 0);
+  $('time').textContent = fmt(left);
+  $('time').className = t.warn === 'over' || left <= 0 ? 'over' : t.warn;
+  const n = new Date(S.now + (Date.now() - at) + S.tzOffsetMin * 60000);
+  $('clock').textContent = pad(n.getUTCHours()) + ':' + pad(n.getUTCMinutes()) + ':' + pad(n.getUTCSeconds());
+}
+setInterval(tick, 250);
+async function doSend(m) {
+  $('err').textContent = '';
+  const r = await send(m);
+  if (r.ok === false) { $('err').textContent = r.error || 'Failed'; if (/password|locked/i.test(r.error || '')) setUnlocked(false, r.error); }
+  else if (m.op === 'message') $('text').value = '';
+}
+$('send').onclick = () => doSend({ op: 'message', text: $('text').value, flash: $('flash').checked });
+$('clear').onclick = () => doSend({ op: 'clear' });
+$('text').onkeydown = e => { if (e.key === 'Enter') $('send').click(); };
+for (const q of ['STAND BY', '5 MINUTES', 'WRAP UP', 'STOP NOW', "TIME'S UP"]) {
+  const b = document.createElement('button'); b.textContent = q; b.onclick = () => doSend({ op: 'message', text: q, flash: $('flash').checked }); $('quick').append(b);
+}
+
+// ---- transport: relay client. Token = last path segment of /p/<token>. ----
+const token = decodeURIComponent(location.pathname.split('/').filter(Boolean).pop() || '');
+const pwKey = 'producer-pw:' + token;
+let ws = null, connected = false, lastState = 0, backoff = 1000;
+const pending = new Map(); // req -> resolve
+let pw = ''; try { pw = sessionStorage.getItem(pwKey) || ''; } catch {}
+
+function setConn() {
+  const fresh = connected && Date.now() - lastState < 5000;
+  $('conn').className = fresh ? 'on' : '';
+  $('conn').textContent = !connected ? 'Reconnecting' : fresh ? 'Connected' : 'Stage timer not connected';
+}
+setInterval(setConn, 1000);
+
+function send(m) { // m: {op, ...} -> Promise<{ok, error?}>
+  return new Promise(res => {
+    if (!ws || ws.readyState !== 1) return res({ ok: false, error: 'Not connected' });
+    const req = Math.random().toString(36).slice(2);
+    const t = setTimeout(() => { pending.delete(req); res({ ok: false, error: 'No response from stage timer' }); }, 6000);
+    pending.set(req, r => { clearTimeout(t); res(r); });
+    ws.send(JSON.stringify({ relay: 'up', data: { ...m, req, password: pw } }));
+  });
+}
+
+function setUnlocked(on, err) {
+  if (!on) { pw = ''; try { sessionStorage.removeItem(pwKey); } catch {} }
+  $('editcard').hidden = !on; $('lockcard').hidden = on; $('lockmsg').hidden = on; $('unlock').hidden = on; $('pwrow').hidden = true;
+  $('err0').textContent = err || '';
+}
+$('unlock').onclick = () => { $('pwrow').hidden = false; $('pw').focus(); };
+$('pw').onkeydown = e => { if (e.key === 'Enter') $('pwgo').click(); };
+$('pwgo').onclick = async () => {
+  pw = $('pw').value; $('err0').textContent = '';
+  const r = await send({ op: 'auth' });
+  if (r.ok) { try { sessionStorage.setItem(pwKey, pw); } catch {} $('pw').value = ''; setUnlocked(true); }
+  else { pw = ''; $('err0').textContent = r.error || 'Failed'; }
+};
+$('lock').onclick = () => setUnlocked(false);
+
+function connect() {
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/?role=subscriber&channel=' + encodeURIComponent(token));
+  ws.onopen = () => { connected = true; backoff = 1000; setConn(); };
+  ws.onmessage = e => {
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    if (m.type === 'state') { lastState = Date.now(); render(m); setConn(); }
+    else if (m.type === 'ack' && pending.has(m.req)) { const f = pending.get(m.req); pending.delete(m.req); f(m); }
+  };
+  ws.onclose = () => { connected = false; setConn(); setTimeout(connect, backoff); backoff = Math.min(backoff * 2, 15000); };
+}
+connect();
+setUnlocked(false);
+// restore unlocked UI from a remembered password (verified with the publisher)
+if (pw) { const saved = pw; setTimeout(async () => { pw = saved; const r = await send({ op: 'auth' }); setUnlocked(!!r.ok); }, 1500); }
+</script>
+</body>
+</html>

@@ -19,7 +19,7 @@ The token gate is configurable per role so you can mix and match:
 | `PUBLIC_SUBSCRIBERS` | `true` | When true, subscribers connect without a token. Set `false` to require the token from readers too. |
 | `PUBLIC_PUBLISHERS` | `false` | When true, **anyone** can publish to **any** channel without a token. Channel name becomes the only protection against someone trampling your stream. Set this for hand-it-out installs where sharing the token is too much friction. |
 
-Pick non-guessable channel names (`qlab-mainstage-2026-tonight-x7k9m2`, not `show1`) when any role is public — that's all that keeps random clients from listening to or writing into your channel. The relay does no rate-limiting; behind a public domain, put it behind a proxy that does.
+Pick non-guessable channel names (`qlab-mainstage-2026-tonight-x7k9m2`, not `show1`) when any role is public — that's all that keeps random clients from listening to or writing into your channel. Only item writes and upstream messages are rate-limited (per socket); behind a public domain, also put it behind a proxy that does.
 
 Toggle either via the Makefile when deploying:
 
@@ -32,6 +32,20 @@ make deploy                              # default: public readers, authenticate
 Messages are passed through untouched. Pick your own payload format per channel (JSON recommended).
 
 `GET /health` returns channel stats as JSON.
+
+## Upstream messages (subscriber -> publisher)
+
+A subscriber may send text JSON `{"relay":"up","data":{...}}`. The relay forwards that exact text to every **publisher** of the channel. It is not cached, not sent to other subscribers, and never touches the item store. Messages over 2 KB are dropped, and each socket shares the per-socket token bucket above (excess is dropped silently). Nothing else a subscriber sends reaches publishers. Set `UPSTREAM_ENABLED=false` to turn it off (default `true`).
+
+The relay does no auth on upstream messages; the publisher must check any password itself. Note that a publisher's replies (e.g. acks) go out like any publisher message: to all subscribers, and the last one is cached as late-joiner state.
+
+## Producer page: `GET /p/:token`
+
+Serves `public/producer.html` (the same file for any token; the page reads the token from `location.pathname` and uses it as the channel, connecting as subscriber to the same host). Sent with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. No other static paths exist. It expects stage-timer `{type:"state",...}` / `{type:"ack",req,ok,error?}` messages from the publisher and sends `{relay:"up",data:{op:"auth"|"message"|"clear",req,password,...}}` upstream.
+
+### timer.trv.as
+
+In Nginx Proxy Manager: proxy host `timer.trv.as` -> this container's host port, **WebSockets Support ON**, SSL on, and **no Authentik forward-auth** on `/p/*` or the WebSocket (producers are external). Add the DNS record. The channel name is the secret "view token", so use long random tokens.
 
 ## Items (shared & private, persisted)
 

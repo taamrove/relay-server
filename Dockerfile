@@ -6,6 +6,7 @@ COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 
 COPY src ./src
+COPY public ./public
 
 ENV PORT=8080
 # Custom-cue item store. Mount a volume here or items are lost on rebuild.

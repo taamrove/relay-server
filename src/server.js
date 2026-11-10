@@ -2,6 +2,7 @@ import { WebSocketServer } from 'ws';
 import http from 'node:http';
 import { URL } from 'node:url';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import { ItemStore, hashOwnerKey, canSee, viewOf } from './items.js';
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -19,6 +20,11 @@ const PUBLIC_PUBLISHERS  = (process.env.PUBLIC_PUBLISHERS  ?? 'false') !== 'fals
 // can edit by default. Both empty = dev mode, everyone may edit shared items.
 const ITEMS_ENABLED = (process.env.ITEMS_ENABLED ?? 'true') !== 'false';
 const EDITOR_TOKEN = process.env.EDITOR_TOKEN || TOKEN;
+// Upstream: a subscriber may send {"relay":"up","data":{...}}; forwarded as-is
+// to the channel's publishers (e.g. producer page -> stage timer).
+const UPSTREAM_ENABLED = (process.env.UPSTREAM_ENABLED ?? 'true') !== 'false';
+const UPSTREAM_MAX = 2048;
+const PRODUCER_HTML = fs.readFileSync(new URL('../public/producer.html', import.meta.url));
 const DATA_DIR = process.env.DATA_DIR ?? './data';
 const store = ITEMS_ENABLED ? new ItemStore({ dataDir: DATA_DIR }) : null;
 
@@ -67,6 +73,12 @@ const server = http.createServer((req, res) => {
       };
     }
     res.end(JSON.stringify({ ok: true, channels: stats }));
+    return;
+  }
+  // Token is in the path: never cache, never leak via Referer. Same page for any token.
+  if (req.method === 'GET' && /^\/p\/[^/?#]+\/?(\?.*)?$/.test(req.url)) {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
+    res.end(PRODUCER_HTML);
     return;
   }
   res.writeHead(404);
@@ -123,7 +135,10 @@ wss.on('connection', (ws) => {
 
   ws.on('message', (data, isBinary) => {
     if (ws.role === 'subscriber') {
-      if (!isBinary && store) handleItemsMessage(ws, data.toString());
+      if (isBinary) return;
+      const text = data.toString();
+      if (UPSTREAM_ENABLED && data.length <= UPSTREAM_MAX && text.includes('"up"') && handleUpstream(ch, ws, text)) return;
+      if (store) handleItemsMessage(ws, text);
       return;
     }
     const payload = isBinary ? data : data.toString();
@@ -173,6 +188,16 @@ function takeToken(ws) {
   b.at = now;
   if (b.tokens < 1) return false;
   b.tokens -= 1;
+  return true;
+}
+
+// Returns true if the message was an upstream envelope (consumed, forwarded or not).
+function handleUpstream(ch, ws, text) {
+  let msg;
+  try { msg = JSON.parse(text); } catch { return false; }
+  if (msg?.relay !== 'up') return false;
+  if (!takeToken(ws)) return true;
+  for (const pub of ch.publishers) if (pub.readyState === pub.OPEN) pub.send(text);
   return true;
 }
 
