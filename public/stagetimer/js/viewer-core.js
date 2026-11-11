@@ -394,6 +394,7 @@ function connect() {
   ws.onclose = () => { const off = $('offline'); if (off) off.style.display = 'block'; document.body.classList.remove('connected'); setTimeout(connect, 1000); };
   ws.onmessage = e => {
     const d = JSON.parse(e.data);
+    window.lastStateAt = Date.now();
     if (d.type === 'tick' || d.type === 'state') applyState(d.state);
     else if (window.outputOnMessage) window.outputOnMessage(d);   // acks etc.
   };

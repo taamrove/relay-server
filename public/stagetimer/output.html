@@ -157,7 +157,7 @@ if (relayCode) {
       if (d.type !== 'state' || !d.display || !d.screen) return;       // stats and anything else: ignored
       const raw = d.now - Date.now();                                  // venue clock - my clock; smoothed
       offset = offset == null ? raw : offset * 0.8 + raw * 0.2; window.clockOffset = offset;
-      relayCanEdit = !!d.canEdit; outId = d.screen.id;
+      window.lastStateAt = Date.now(); relayCanEdit = !!d.canEdit; outId = d.screen.id;
       document.body.classList.add('connected');
       applyState({ ...d.display, outputs: [d.screen] });
     };
@@ -167,6 +167,23 @@ if (relayCode) {
   window.outputOnOpen = ws => ws.send(JSON.stringify({ type: 'hello', output: outId }));   // local viewer counting
   window.outputOnMessage = d => { if (d.type === 'ack') onAck(d); };
 }
+
+// ---- presence heartbeat (every 5 s): who is watching this screen. Local: over /ws; relay: upstream (no password involved) ----
+const vid = (() => { try { let v = localStorage.getItem('st.vid'); if (!/^[a-z0-9]{6,32}$/.test(v || '')) { v = Math.random().toString(36).slice(2, 12).padEnd(10, 'x'); localStorage.setItem('st.vid', v); } return v; } catch { return Math.random().toString(36).slice(2, 12).padEnd(10, 'x'); } })();
+const deviceLabel = () => {
+  const ua = navigator.userAgent;
+  const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Mac OS X/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /CrOS/.test(ua) ? 'ChromeOS' : /Linux/.test(ua) ? 'Linux' : 'Device';
+  const br = /Edg\//.test(ua) ? 'Edge' : /Firefox|FxiOS/.test(ua) ? 'Firefox' : /CriOS|Chrome/.test(ua) ? (os === 'Linux' ? 'Chromium' : 'Chrome') : /Safari/.test(ua) ? 'Safari' : 'browser';
+  return os + ' \u00b7 ' + br;
+};
+function presence() {
+  const ws = relayCode ? relayWs : window.viewerWs;
+  if (!ws || ws.readyState !== 1) return;
+  const data = { type: 'presence', id: vid, device: deviceLabel(), w: innerWidth, h: innerHeight, lag: window.lastStateAt ? Date.now() - window.lastStateAt : 3600000 };
+  if (relayCode && offset != null) data.off = offset;
+  ws.send(JSON.stringify(relayCode ? { relay: 'up', data } : data));
+}
+setInterval(presence, 5000); setTimeout(presence, 1500);
 
 // ---- edit unlock: password in sessionStorage only; ops go to the same handler locally (WS) and publicly (relay up) ----
 const pending = new Map();
